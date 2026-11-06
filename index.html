@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engineering Drawing - Submit Files</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    body { margin: 0; min-height: 100vh; min-height: 100dvh; display: flex; justify-content: center;
+           align-items: center; font-family: Arial, sans-serif; }
+    .page-container { width: 100%; max-width: 560px; padding: 24px; box-sizing: border-box; text-align: center; }
+    .g_id_signin { display: flex; justify-content: center; transform: scale(1.5); transform-origin: center; margin: 18px 0; }
+    form { text-align: left; }
+    label { display: block; margin-bottom: 4px; font-weight: bold; }
+    select { width: 100%; padding: 6px; box-sizing: border-box; }
+    ul { list-style: none; padding: 0; margin: 8px 0; text-align: left; }
+    li { padding: 6px 0; border-bottom: 1px solid #eee; font-size: 14px; word-break: break-all; }
+    progress { width: 100%; height: 10px; }
+    .ok { color: #0a7a2f; } .err { color: #c00; }
+    #taskInfo { font-weight: bold; margin: 4px 0; }
+    button { padding: 10px 20px; font-size: 16px; }
+    .help { font-size: 14px; background: #f5f7fa; border: 1px solid #dde3ea; border-radius: 6px; padding: 8px 12px; margin: 12px 0; }
+    .help p { margin: 4px 0; }
+    .slot { margin: 10px 0; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; }
+    .slot label { font-size: 14px; }
+    .slotrow { display: flex; gap: 6px; align-items: center; }
+    .slotrow input[type=file] { flex: 1; min-width: 0; }
+    .clear { padding: 2px 10px; font-size: 16px; }
+    .info { color: #555; }
+  </style>
+</head>
+<body>
+<div class="page-container">
+  <h2>Engineering Drawing - Submit Files</h2>
+  <p id="taskInfo">Loading...</p>
+  <p id="taskTime"></p>
+
+  <div id="signinArea" hidden>
+    <p>กรุณาเข้าสู่ระบบด้วยบัญชี @go.buu.ac.th<br>Please sign in with your @go.buu.ac.th account.</p>
+    <div id="g_id_onload"
+         data-client_id="444828852273-52ssitv2kd1t05eshr489d3apq93ugpi.apps.googleusercontent.com"
+         data-callback="handleCredentialResponse"
+         data-auto_prompt="false"></div>
+    <div class="g_id_signin" id="signinBtn" data-type="standard"></div>
+  </div>
+
+  <p id="status">Please sign in.</p>
+
+  <form id="submitForm" hidden>
+    <div id="courseBlock">
+      <p><label for="courseCode">Course</label>
+        <select id="courseCode" required>
+          <option value="">Select course</option>
+          <option value="50310164">50310164</option>
+          <option value="50310169">50310169</option>
+        </select></p>
+      <p><label for="section">Section</label>
+        <select id="section" required><option value="">Select section</option></select></p>
+    </div>
+
+    <div class="help">
+      <p>แต่ละช่องใส่ได้ <b>1 ไฟล์</b> ใช้ได้สูงสุด 6 ช่อง / One file per slot, up to 6 files.</p>
+      <p>SolidWorks assembly ให้ zip รวมเป็นไฟล์เดียว / Zip a SolidWorks assembly into one file.</p>
+      <p>กดปุ่ม ✕ เพื่อเอาไฟล์ที่เลือกผิดออก / Press ✕ to remove a wrong file.</p>
+      <p>กด <b>Upload</b> เมื่อเลือกไฟล์ครบ และกด <b>จบการส่ง / Finish</b> เมื่อส่งครบทุกไฟล์แล้ว</p>
+    </div>
+
+    <div id="slots"></div>
+
+    <p style="text-align:center"><button type="submit" id="sendBtn">Upload</button></p>
+  </form>
+
+  <div id="result" hidden></div>
+</div>
+
+<script>
+  // ===== CONFIG =====
+  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwMKJem4cLpksIoNSdMsba0BJEVi6CtJnOmsc1T92v-ZzN7dBt3_JeyvqtFZfk1UAFBYA/exec";   // Apps Script /exec URL
+  const MAX_FILES = 6;                           // number of file slots (must match Code.gs)
+  const MAX_BYTES = 500 * 1024 * 1024;
+  const COURSE_SECTIONS = { "50310164": ["1", "2", "3"], "50310169": ["1", "2"] };
+  // Page URL decides the task:  index.html?t=r1_acad | r1_sw | r2_acad | r2_sw | test
+  // ==================
+
+  const TASK = new URLSearchParams(location.search).get("t") || "";
+  let idToken = "";
+  let isTest = false;
+  const $ = id => document.getElementById(id);
+
+  function fmt(n) {
+    return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  }
+
+  function fmtTime(iso) {
+    return new Date(iso).toLocaleString("th-TH", {
+      timeZone: "Asia/Bangkok", day: "numeric", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit"
+    });
+  }
+
+  // ---------- task info ----------
+  async function loadTaskInfo() {
+    if (!TASK) { $("taskInfo").textContent = "ลิงก์ไม่ถูกต้อง / Invalid link (missing task)"; $("taskInfo").className = "err"; $("status").textContent = ""; return; }
+    try {
+      const res = await fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify({ action: "info", task: TASK }) });
+      const d = await res.json();
+      if (!d.ok) throw new Error(d.error || "Server error");
+      isTest = !!d.test;
+      $("taskInfo").textContent = d.label;
+      if (d.open && d.close) {
+        $("taskTime").textContent = "เปิดรับงาน / Open: " + fmtTime(d.open) + " – " + fmtTime(d.close);
+      } else {
+        $("taskTime").textContent = "TEST MODE – no timer";
+      }
+      $("signinArea").hidden = false;
+    } catch (err) {
+      $("taskInfo").textContent = "Error: " + err.message; $("taskInfo").className = "err"; $("status").textContent = "";
+    }
+  }
+  loadTaskInfo();
+
+  // ---------- sign in ----------
+  function handleCredentialResponse(response) {
+    idToken = response.credential;
+    let email = "";
+    try {
+      const p = JSON.parse(atob(idToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+      email = p.email || "";
+    } catch (e) {}
+    $("status").textContent = "Signed in" + (email ? " as " + email : "") + ". Please complete the form.";
+    $("submitForm").hidden = false;
+  }
+
+  $("courseCode").addEventListener("change", function () {
+    const sel = $("section");
+    sel.innerHTML = '<option value="">Select section</option>';
+    (COURSE_SECTIONS[this.value] || []).forEach(s => {
+      const o = document.createElement("option"); o.value = s; o.textContent = s; sel.appendChild(o);
+    });
+  });
+
+  // ---------- file slots ----------
+  const slotEls = () => Array.from(document.querySelectorAll("#slots .slot"));
+
+  function clearSlot(slot) {
+    slot.querySelector("input[type=file]").value = "";
+    const bar = slot.querySelector("progress");
+    bar.hidden = true; bar.value = 0;
+    slot.querySelector(".msg").textContent = "";
+    slot.querySelector(".msg").className = "msg";
+    slot.querySelector(".info").textContent = "";
+  }
+
+  function clearAllSlots() { slotEls().forEach(clearSlot); }
+
+  function setSlotsDisabled(disabled) {
+    slotEls().forEach(slot => {
+      slot.querySelector("input[type=file]").disabled = disabled;
+      slot.querySelector(".clear").disabled = disabled;
+    });
+  }
+
+  function buildSlots() {
+    const box = $("slots");
+    for (let i = 0; i < MAX_FILES; i++) {
+      const slot = document.createElement("div");
+      slot.className = "slot";
+      slot.innerHTML =
+        '<label for="file' + i + '"></label>' +
+        '<div class="slotrow">' +
+          '<input id="file' + i + '" type="file">' +
+          '<button type="button" class="clear" title="ลบไฟล์ / Remove">✕</button>' +
+        '</div>' +
+        '<progress value="0" max="100" hidden></progress> ' +
+        '<small class="info"></small> <small class="msg"></small>';
+      slot.querySelector("label").textContent =
+        "ไฟล์ที่ " + (i + 1) + " / File " + (i + 1) + (i === 0 ? " *" : "");
+      const input = slot.querySelector("input[type=file]");
+      input.addEventListener("change", function () {
+        const f = input.files && input.files[0];
+        slot.querySelector(".msg").textContent = "";
+        const bar = slot.querySelector("progress"); bar.hidden = true; bar.value = 0;
+        slot.querySelector(".info").textContent = f ? fmt(f.size) : "";
+      });
+      slot.querySelector(".clear").addEventListener("click", function () { clearSlot(slot); });
+      box.appendChild(slot);
+    }
+  }
+  buildSlots();
+
+  // ---------- result / finish ----------
+  let allSaved = [];     // files saved successfully in this page session
+  let lastTime = "";     // server time of the latest successful upload
+
+  function showResult(folderNote, finished) {
+    $("submitForm").hidden = true;
+    $("status").textContent = "";
+    const box = $("result");
+    box.innerHTML = "";
+
+    const h = document.createElement("h3");
+    h.className = "ok";
+    h.textContent = finished ? "✔ จบการส่งงานเรียบร้อย / Finished"
+                             : "✔ ส่งไฟล์เรียบร้อยแล้ว / Submission complete";
+    box.appendChild(h);
+
+    if (lastTime) {
+      const t = document.createElement("p");
+      t.textContent = "เวลาที่ระบบบันทึก / Recorded at: " + lastTime + " (Thailand time)";
+      box.appendChild(t);
+    }
+    if (folderNote) {
+      const fnote = document.createElement("p");
+      fnote.textContent = "Folder: " + folderNote;
+      box.appendChild(fnote);
+    }
+
+    const n = document.createElement("p");
+    n.textContent = "ไฟล์ที่ส่งแล้ว " + allSaved.length + " ไฟล์ / Files received: " + allSaved.length;
+    box.appendChild(n);
+
+    const ul = document.createElement("ul");
+    allSaved.forEach(f => {
+      const li = document.createElement("li");
+      li.textContent = f.name + " (" + fmt(f.size) + ")";
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+
+    const tip = document.createElement("p");
+    tip.textContent = "แนะนำให้ถ่ายภาพหน้าจอนี้เก็บไว้เป็นหลักฐาน / Please keep a screenshot of this page.";
+    box.appendChild(tip);
+
+    if (finished) {
+      const bye = document.createElement("p");
+      bye.textContent = "ออกจากระบบแล้ว ปิดหน้านี้ได้ / You are signed out. You may close this page.";
+      box.appendChild(bye);
+      box.hidden = false;
+      return;
+    }
+
+    const more = document.createElement("button");
+    more.type = "button";
+    more.textContent = "ส่งไฟล์เพิ่ม / Upload more files";
+    more.addEventListener("click", function () {
+      box.hidden = true;
+      clearAllSlots();
+      $("submitForm").hidden = false;
+      $("status").className = "";
+      $("status").textContent = "ส่งไฟล์เพิ่มได้ภายในเวลาที่เปิดรับ / You can upload more files while the window is open.";
+    });
+    box.appendChild(more);
+
+    const fin = document.createElement("button");
+    fin.type = "button";
+    fin.style.marginLeft = "12px";
+    fin.style.fontWeight = "bold";
+    fin.textContent = "จบการส่ง / Finish";
+    fin.addEventListener("click", function () {
+      if (!confirm("ยืนยันจบการส่งงาน? / Finish and sign out?\n\n" +
+                   "หลังจากนี้จะส่งไฟล์เพิ่มจากหน้านี้ไม่ได้ / You will not be able to upload more from this page.")) return;
+      idToken = "";
+      try { google.accounts.id.disableAutoSelect(); } catch (e) {}
+      $("signinArea").hidden = true;
+      showResult(folderNote, true);
+    });
+    box.appendChild(fin);
+
+    box.hidden = false;
+  }
+
+  // ---------- upload ----------
+  function uploadOne(file, url, slot) {
+    return new Promise((resolve, reject) => {
+      const bar = slot.querySelector("progress"), msg = slot.querySelector(".msg");
+      bar.hidden = false; bar.value = 0; msg.textContent = ""; msg.className = "msg";
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", url);
+      xhr.upload.onprogress = e => { if (e.lengthComputable) bar.value = Math.round(e.loaded * 100 / e.total); };
+      xhr.onload = () => {
+        if (xhr.status === 200 || xhr.status === 201) {
+          bar.value = 100; msg.textContent = "✔ done"; msg.className = "msg ok"; resolve();
+        } else { msg.textContent = "✘ failed (" + xhr.status + ")"; msg.className = "msg err"; reject(new Error(file.name)); }
+      };
+      xhr.onerror = () => { msg.textContent = "✘ network error"; msg.className = "msg err"; reject(new Error(file.name)); };
+      xhr.send(file);
+    });
+  }
+
+  $("submitForm").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const btn = $("sendBtn"), status = $("status");
+
+    // collect the files from the filled slots (empty slots are skipped)
+    const chosen = [];
+    slotEls().forEach(slot => {
+      const f = slot.querySelector("input[type=file]").files[0];
+      if (f) chosen.push({ slot, file: f });
+    });
+
+    if (!idToken) { status.className = "err"; status.textContent = "Please sign in first."; return; }
+    if (chosen.length === 0) { status.className = "err"; status.textContent = "กรุณาเลือกไฟล์อย่างน้อย 1 ไฟล์ / Please choose at least 1 file."; return; }
+    for (const c of chosen) {
+      if (c.file.size === 0) { status.className = "err"; status.textContent = "ไฟล์ว่าง / Empty file: " + c.file.name; return; }
+      if (c.file.size > MAX_BYTES) { status.className = "err"; status.textContent = "ไฟล์ใหญ่เกินไป / File too large (max " + fmt(MAX_BYTES) + "): " + c.file.name; return; }
+    }
+
+    btn.disabled = true; setSlotsDisabled(true);
+    status.className = ""; status.textContent = "Preparing upload...";
+    try {
+      const res = await fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "init", task: TASK, idToken, origin: window.location.origin,
+          courseCode: $("courseCode").value, section: $("section").value,
+          files: chosen.map(c => ({ name: c.file.name, size: c.file.size, type: c.file.type || "application/octet-stream" }))
+        })
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Server error");
+
+      status.textContent = "Uploading... please do not close this page.";
+      window.onbeforeunload = e => { e.preventDefault(); e.returnValue = ""; };
+      let failedCount = 0;
+      for (let i = 0; i < chosen.length; i++) {
+        try {
+          await uploadOne(chosen[i].file, data.uploads[i].uploadUrl, chosen[i].slot);
+          allSaved.push({ name: data.uploads[i].savedName, size: chosen[i].file.size });
+          clearSlot(chosen[i].slot);          // saved: free the slot so a retry never duplicates it
+        } catch (e) { failedCount++; }         // failed: the file stays in its slot for a retry
+      }
+      window.onbeforeunload = null;
+      if (data.time) lastTime = data.time;
+
+      if (failedCount === 0) {
+        showResult(isTest ? data.folder : "");
+      } else {
+        status.className = "err";
+        status.textContent = failedCount + " ไฟล์ส่งไม่สำเร็จ (ยังอยู่ในช่องเดิม) กด Upload อีกครั้งเพื่อส่งเฉพาะไฟล์ที่เหลือ / "
+          + failedCount + " file(s) failed and stay in their slots. Press Upload to retry only those.";
+      }
+    } catch (err) {
+      status.className = "err"; status.textContent = "Error: " + err.message;
+    } finally {
+      btn.disabled = false; setSlotsDisabled(false);
+    }
+  });
+</script>
+</body>
+</html>
